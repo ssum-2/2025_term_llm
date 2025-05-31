@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>공부 도우미 AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  <!-- Custom CSS -->
+  <style>
+    :root {
+      --color-light: #D9AA8F;
+      --color-medium: #8C6658;
+      --color-dark: #A64029;
+      --color-darker: #590E0E;
+      --color-black: #0D0D0D;
+      --color-success: #28a745;
+      --color-gray: #6c757d;
+    }
+    body {
+      background-color: #f8f9fa;
+      font-family: 'Noto Sans KR', sans-serif, Arial;
+      color: var(--color-black);
+    }
+    .navbar-custom {
+      background-color: var(--color-darker);
+    }
+    .card-custom {
+      border: 2px solid var(--color-medium);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    .btn-custom {
+      background-color: var(--color-dark);
+      color: white;
+      border: none;
+    }
+    .btn-custom:hover {
+      background-color: var(--color-darker);
+      color: white;
+    }
+    .file-list {
+      background-color: var(--color-light);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    #answer {
+      background-color: white;
+      border: 2px solid var(--color-medium);
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+      min-height: 100px;
+    }
+    #queryInput {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: 2px solid var(--color-medium);
+      font-size: 16px;
+    }
+    .container {
+      max-width: 800px;
+      margin-top: 40px;
+    }
+    .upload-status {
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background-color: var(--color-light);
+    }
+    .upload-status .icon {
+      font-size: 1.2rem;
+    }
+    .progress {
+      margin-top: 10px;
+      height: 10px;
+      border-radius: 5px;
+      background-color: #e9ecef;
+    }
+    .progress-bar {
+      background-color: var(--color-dark);
+      transition: width 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+  <!-- 네비게이션 바 -->
+  <nav class="navbar navbar-expand-lg navbar-custom mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand text-white" href="#">
+        <i class="bi bi-book"></i> 공부 도우미 AI
+      </a>
+    </div>
+  </nav>
+
+  <!-- 메인 컨테이너 -->
+  <div class="container">
+    <!-- 파일 업로드 섹션 -->
+    <div class="card card-custom mb-4">
+      <div class="card-body">
+        <h4 class="card-title"><i class="bi bi-file-earmark-pdf"></i> PDF 파일 업로드</h4>
+        <p class="card-text">여러 PDF 파일을 선택해 업로드하세요.</p>
+        <form id="uploadForm">
+          <div class="mb-3">
+            <label for="pdfFiles" class="form-label">파일 선택</label>
+            <input class="form-control" type="file" id="pdfFiles" name="pdfs" multiple>
+          </div>
+          <div class="progress d-none" id="uploadProgress">
+            <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%"></div>
+          </div>
+          <button type="submit" class="btn btn-custom">
+            <i class="bi bi-upload"></i> 업로드
+          </button>
+          <div class="upload-status d-none" id="uploadStatus">
+            <span class="icon"><i class="bi bi-check-circle" id="uploadIcon"></i></span>
+            <span id="uploadText">업로드 중...</span>
+          </div>
+        </form>
+        <div id="fileList" class="file-list mt-3">
+          <h5><i class="bi bi-list-check"></i> 업로드된 파일</h5>
+          <ul id="uploadedFiles" class="list-group list-group-flush">
+            <li class="list-group-item">업로드된 파일이 없습니다.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- 질문 섹션 -->
+    <div class="card card-custom mb-4">
+      <div class="card-body">
+        <h4 class="card-title"><i class="bi bi-chat-square-text"></i> 질문하기</h4>
+        <form id="askForm">
+          <div class="mb-3">
+            <label for="queryInput" class="form-label">질문 입력</label>
+            <textarea id="queryInput" name="query" rows="3" placeholder="강의자료에서 궁금한 점을 입력하세요."></textarea>
+          </div>
+          <button type="submit" class="btn btn-custom">
+            <i class="bi bi-send"></i> 질문하기
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 답변 섹션 -->
+    <div class="card card-custom">
+      <div class="card-body">
+        <h4 class="card-title"><i class="bi bi-lightbulb"></i> 답변</h4>
+        <div id="answer"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Custom JS -->
+  <script>
+    // 업로드 상태 관리
+    let currentSessionId = 'default';
+
+    // 파일 업로드 처리
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = document.getElementById('pdfFiles').files;
+      if (files.length === 0) {
+        alert('파일을 선택해주세요.');
+        return;
+      }
+
+      // 파일 목록 표시
+      const fileList = document.getElementById('uploadedFiles');
+      fileList.innerHTML = '';
+      for (let i = 0; i < files.length; i++) {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.innerHTML = `<i class="bi bi-file-earmark-pdf"></i> ${files[i].name}`;
+        fileList.appendChild(li);
+      }
+
+      // 프로그레스 바, 상태 표시 활성화
+      const progress = document.getElementById('uploadProgress');
+      const progressBar = document.getElementById('progressBar');
+      const uploadStatus = document.getElementById('uploadStatus');
+      const uploadIcon = document.getElementById('uploadIcon');
+      const uploadText = document.getElementById('uploadText');
+
+      progress.classList.remove('d-none');
+      uploadStatus.classList.remove('d-none');
+      uploadIcon.className = 'bi bi-check-circle text-secondary';
+      uploadText.textContent = '업로드 중...';
+
+      // 프로그레스 바 애니메이션 (실제 업로드 진행률은 서버에서 처리 불가, 시각적 효과만)
+      let progressValue = 0;
+      const interval = setInterval(() => {
+        progressValue += 10;
+        if (progressValue > 90) progressValue = 90;
+        progressBar.style.width = `${progressValue}%`;
+      }, 300);
+
+      const formData = new FormData(e.target);
+      try {
+        const response = await fetch('/upload', { method: 'POST', body: formData });
+        const result = await response.json();
+        if (result.status === 'success') {
+          currentSessionId = result.session_id || 'default';
+          progressBar.style.width = '100%';
+          uploadIcon.className = 'bi bi-check-circle text-success';
+          uploadText.textContent = '업로드 완료';
+          // 3초 후 프로그레스 바 숨기기
+          setTimeout(() => {
+            progress.classList.add('d-none');
+          }, 3000);
+        } else {
+          throw new Error('업로드 실패');
+        }
+      } catch (error) {
+        progressBar.style.width = '100%';
+        progressBar.classList.add('bg-danger');
+        uploadIcon.className = 'bi bi-x-circle text-danger';
+        uploadText.textContent = '업로드 실패';
+      } finally {
+        clearInterval(interval);
+      }
+    });
+
+    // 질문 전송 처리
+    document.getElementById('askForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = document.getElementById('queryInput').value;
+      if (!query) {
+        alert('질문을 입력해주세요.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('session_id', currentSessionId);
+      formData.append('query', query);
+
+      const response = await fetch('/ask', { method: 'POST', body: formData });
+      const result = await response.json();
+      document.getElementById('answer').innerHTML = result.answer || result.error;
+    });
+  </script>
+</body>
+</html>
