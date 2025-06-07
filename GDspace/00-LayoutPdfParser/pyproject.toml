@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "teddynote-parser"
+version = "0.1.0"
+description = ""
+authors = ["teddy <teddylee777@gmail.com>"]
+license = "Apache 2.0 License"
+readme = "README.md"
+
+packages = [
+    { include = "graphparser" },
+]
+
+[tool.poetry.dependencies]
+python = "3.11.x"
+langchain = "^0.2.16"
+langchain-openai = "^0.1.23"
+langsmith = "^0.1.115"
+langgraph = "^0.2.19"
+pymupdf = "^1.24.10"
+python-dotenv = "^1.0.1"
+pillow = "^10.4.0"
+ipython = "^8.27.0"
+faiss-cpu = "^1.8.0.post1"
+
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
