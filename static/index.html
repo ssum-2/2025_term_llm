@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>AnalNext 증권 애널리스트 리포트 AI 분석 서비스</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Google Fonts (Noto Sans KR) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- Custom CSS -->
+  <style>
+    :root {
+      --color-light: #f0f8ff;
+      --color-medium: #87ceeb;
+      --color-dark: #4682b4;
+      --color-darker: #2c3e50;
+      --color-black: #212529;
+      --color-success: #28a745;
+      --color-gray: #6c757d;
+    }
+    body {
+      background-color: #f8f9fa;
+      font-family: 'Noto Sans KR', sans-serif;
+      color: var(--color-black);
+    }
+    .navbar-custom {
+      background-color: var(--color-darker);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .card-custom {
+      border: 1px solid #dee2e6;
+      border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+      transition: all 0.3s ease;
+    }
+    .card-custom:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+    }
+    .btn-custom {
+      background-color: var(--color-dark);
+      color: white;
+      border: none;
+      font-weight: 500;
+      padding: 10px 20px;
+      transition: background-color 0.3s ease;
+    }
+    .btn-custom:hover {
+      background-color: var(--color-darker);
+      color: white;
+    }
+    .file-list {
+      background-color: var(--color-light);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    #answer {
+      background-color: white;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+      min-height: 100px;
+    }
+    #queryInput {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #ced4da;
+      font-size: 16px;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    #queryInput:focus {
+        border-color: var(--color-dark);
+        box-shadow: 0 0 0 0.25rem rgba(70, 130, 180, 0.25);
+    }
+    .container {
+      max-width: 960px;
+      margin-top: 40px;
+    }
+    .progress {
+      height: 8px;
+    }
+  </style>
+</head>
+<body>
+  <!-- 네비게이션 바 -->
+  <nav class="navbar navbar-expand-lg navbar-dark navbar-custom mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="#">
+        <i class="bi bi-graph-up-arrow"></i> <strong>AnalNext</strong> | AI 리포트 분석
+      </a>
+    </div>
+  </nav>
+
+  <!-- 메인 컨테이너 -->
+  <div class="container">
+    <!-- 파일 업로드, 질문, 답변을 한 줄에 배치 -->
+    <div class="row g-4">
+        <!-- 좌측 컬럼 -->
+        <div class="col-lg-6">
+            <!-- 파일 업로드 섹션 -->
+            <div class="card card-custom mb-4">
+              <div class="card-body">
+                <h4 class="card-title"><i class="bi bi-file-earmark-arrow-up-fill"></i> 리포트 업로드</h4>
+                <p class="card-text text-muted">분석할 PDF 파일을 선택해 업로드하세요.</p>
+                <form id="uploadForm">
+                  <div class="mb-3">
+                    <label for="pdfFiles" class="form-label">파일 선택</label>
+                    <input class="form-control" type="file" id="pdfFiles" name="files" multiple>
+                  </div>
+                  <input type="hidden" id="modeSelect" name="mode" value="solar">
+                  <button type="submit" class="btn btn-custom w-100">
+                    <i class="bi bi-upload"></i> 업로드 및 분석 시작
+                  </button>
+                  <div class="progress d-none mt-3" id="uploadProgress">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressBar" role="progressbar" style="width: 0%"></div>
+                  </div>
+                </form>
+                <div id="fileList" class="file-list mt-3">
+                  <h6><i class="bi bi-list-check"></i> 분석 대상 리포트</h6>
+                  <ul id="uploadedFiles" class="list-group list-group-flush bg-transparent">
+                    <li class="list-group-item bg-transparent text-muted">업로드된 파일이 없습니다.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- 질문 섹션 -->
+            <div class="card card-custom">
+              <div class="card-body">
+                <h4 class="card-title"><i class="bi bi-chat-square-text-fill"></i> 질문하기</h4>
+                <form id="askForm">
+                  <div class="mb-3">
+                    <label for="queryInput" class="form-label">질문 입력</label><br>
+                      <div class="card-text text-muted">
+                      <strong>예시 1:</strong> 삼성전자의 최근 주가와 P/B 비율은?<br>
+                      <strong>예시 2:</strong> 애플의 최근 주가와 배당 수익률은?<br>
+                      <strong>예시 3:</strong> HDC에 대한 증권사 리포트 요약과 최근 PER은?<br><br>
+                      </div>
+                    <textarea id="queryInput" name="query" rows="4" class="form-control" placeholder="ex: 삼성전자의 최근 주가와 P/B 비율은?" required></textarea>
+                  </div>
+                  <button type="submit" class="btn btn-custom w-100">
+                    <span id="askButtonText"><i class="bi bi-send"></i> 질문하기</span>
+                    <span id="askSpinner" class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                  </button>
+                </form>
+              </div>
+            </div>
+        </div>
+        <!-- 우측 컬럼 -->
+        <div class="col-lg-6">
+             <!-- 답변 및 재무지표 섹션 -->
+            <div class="card card-custom">
+                <div class="card-body">
+                    <h4 class="card-title"><i class="bi bi-lightbulb-fill"></i> AI 분석 결과</h4>
+                    <div id="answer"><p class="text-muted">AI의 답변이 여기에 표시됩니다.</p></div>
+                    <hr>
+                    <h5 class="card-title mt-4"><i class="bi bi-bar-chart-line-fill"></i> 재무지표</h5>
+                    <div style="height: 250px;">
+                        <canvas id="financialChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+  </div>
+
+  <script>
+    // 전역 변수
+    let myChart;
+
+    // 파일 업로드 처리
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const files = document.getElementById('pdfFiles').files;
+        if (files.length === 0) { alert('파일을 선택해주세요.'); return; }
+
+        const fileList = document.getElementById('uploadedFiles');
+        fileList.innerHTML = '';
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex align-items-center bg-transparent';
+            li.innerHTML = `
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" value="${file.name}" id="filecheck-${i}" checked>
+                    <label class="form-check-label" for="filecheck-${i}">
+                        <i class="bi bi-file-earmark-text"></i> ${file.name}
+                    </label>
+                </div>`;
+            fileList.appendChild(li);
+        }
+
+        const progress = document.getElementById('uploadProgress');
+        const progressBar = document.getElementById('progressBar');
+        progress.classList.remove('d-none');
+        progressBar.style.width = '0%';
+
+        // 프로그레스 바
+        setTimeout(() => progressBar.style.width = '30%', 100);
+        setTimeout(() => progressBar.style.width = '60%', 500);
+
+        const formData = new FormData(document.getElementById('uploadForm'));
+
+        try {
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            const result = await response.json();
+            if (result.status === 'success') {
+                progressBar.style.width = '100%';
+                progressBar.classList.add('bg-success');
+                setTimeout(() => progress.classList.add('d-none'), 2000);
+            } else {
+                throw new Error('Upload failed');
+            }
+        } catch (error) {
+            progressBar.style.width = '100%';
+            progressBar.classList.add('bg-danger');
+            console.error(error);
+        }
+    });
+
+    // 답변 렌더링
+    function renderAnswerCards(answer) {
+      const answerDiv = document.getElementById('answer');
+      answerDiv.innerHTML = '';
+
+      const summary = document.createElement('div');
+      summary.className = 'alert alert-light border-start border-4 border-primary';
+      summary.innerHTML = `<h6 class="alert-heading">종합 요약</h6><p class="mb-0">${answer.summary}</p>`;
+      answerDiv.appendChild(summary);
+
+      const row = document.createElement('div');
+      row.className = 'row row-cols-1 g-3'; // 1열로 변경하여 가독성 확보
+      answer.companies.forEach(company => {
+        const col = document.createElement('div');
+        col.className = 'col';
+        col.innerHTML = `
+          <div class="card">
+            <div class="card-header">
+              <strong>${company.name}</strong>
+            </div>
+            <div class="card-body">
+              <p class="mb-1"><strong>의견:</strong> <span class="badge bg-primary bg-opacity-75">${company.opinion}</span></p>
+              <p class="mb-1"><strong>목표주가:</strong> ${new Intl.NumberFormat('ko-KR').format(company.target_price)} 원</p>
+              <p class="mb-1"><strong>근거:</strong> ${company.reason}</p>
+            </div>
+            <div class="card-footer text-muted small">
+              출처: ${company.source}
+            </div>
+          </div>`;
+        row.appendChild(col);
+      });
+      answerDiv.appendChild(row);
+    }
+
+    // --- 차트 생성 (핵심 수정 지점) ---
+    function renderFinancialChart(answer) {
+      const ctx = document.getElementById('financialChart').getContext('2d');
+      if (myChart) {
+        myChart.destroy();
+      }
+
+      const financialData = answer.financial_data;
+      const data = {
+          labels: ['주가 (원)', 'PER (배)', 'PBR (배)'],
+          datasets: [{
+              label: financialData.ticker || '종목',
+              data: [
+                  financialData.price === '알 수 없음' ? 0 : parseFloat(financialData.price),
+                  financialData.per === '알 수 없음' ? 0 : parseFloat(financialData.per),
+                  financialData.pbr === '알 수 없음' ? 0 : parseFloat(financialData.pbr)
+              ],
+              backgroundColor: [
+                  'rgba(70, 130, 180, 0.6)',
+                  'rgba(60, 179, 113, 0.6)',
+                  'rgba(255, 105, 97, 0.6)'
+              ],
+              borderColor: [
+                  'rgba(70, 130, 180, 1)',
+                  'rgba(60, 179, 113, 1)',
+                  'rgba(255, 105, 97, 1)'
+              ],
+              borderWidth: 1
+          }]
+      };
+
+      const options = {
+          indexAxis: 'y', // 가로 막대 그래프로 변경하여 라벨 공간 확보
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+              legend: {
+                  display: false // 데이터셋이 하나이므로 범례 숨김
+              },
+              tooltip: {
+                  callbacks: {
+                      label: function(context) {
+                          let label = context.dataset.label || '';
+                          if (label) {
+                              label += ': ';
+                          }
+                          if (context.parsed.x !== null) {
+                              // 주가는 원화, 나머지는 소수점 2자리로 포맷
+                              if (context.label.includes('주가')) {
+                                  label += new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(context.parsed.x);
+                              } else {
+                                  label += context.parsed.x.toFixed(2);
+                              }
+                          }
+                          return label;
+                      }
+                  }
+              }
+          },
+          scales: {
+              x: { // x축을 로그 스케일로 변경
+                  type: 'logarithmic',
+                  grid: {
+                      display: true,
+                  },
+                  ticks: {
+                  }
+              },
+              y: {
+                  grid: {
+                      display: false
+                  }
+              }
+          }
+      };
+
+      myChart = new Chart(ctx, { type: 'bar', data: data, options: options });
+    }
+
+    // --- 질문 전송 처리 (기존 코드와 유사, UI 피드백 강화) ---
+    document.getElementById('askForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const query = document.getElementById('queryInput').value;
+        if (!query) { alert('질문을 입력해주세요.'); return; }
+
+        const askButtonText = document.getElementById('askButtonText');
+        const askSpinner = document.getElementById('askSpinner');
+        askButtonText.classList.add('d-none');
+        askSpinner.classList.remove('d-none');
+        e.target.querySelector('button').disabled = true;
+
+        const formData = new FormData();
+        formData.append('query', query);
+
+        const selectedFiles = document.querySelectorAll('#uploadedFiles input[type="checkbox"]:checked');
+        if (selectedFiles.length > 0) {
+            selectedFiles.forEach(checkbox => formData.append('source_files', checkbox.value));
+        }
+
+        try {
+            const response = await fetch('/ask', { method: 'POST', body: formData });
+            const result = await response.json();
+            if (result.error) throw new Error(result.details || result.error);
+
+            renderAnswerCards(result);
+            renderFinancialChart(result);
+
+        } catch (error) {
+            document.getElementById('answer').innerHTML = `<div class="alert alert-danger">${error.message}</div>`;
+            console.error(error);
+        } finally {
+            askButtonText.classList.remove('d-none');
+            askSpinner.classList.add('d-none');
+            e.target.querySelector('button').disabled = false;
+        }
+    });
+  </script>
+</body>
+</html>
