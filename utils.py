@@ -71,8 +71,6 @@ def parse_pdf(pdf_path):
 
     print(f"[parse_pdf] 종료됨, elements 개수: {len(elements)}")
     return elements
-
-
 def summarize_single_element(element: dict) -> Document | None:
     elem_type = element.get("type")
     content = element.get("content")
@@ -120,8 +118,6 @@ def summarize_single_element(element: dict) -> Document | None:
         summary_text = f"[ERROR] LLM 요약 실패 (Page: {page}): {str(e)}"
 
     return Document(page_content=summary_text, metadata=metadata)
-
-
 def caption_images(image_path: str) -> str:
     # 이미지 캡셔닝을 OpenAI Vision API만 사용하도록 구현
     with open(image_path, "rb") as f:

@@ -19,6 +19,12 @@ class FinalAnswer(BaseModel):
     companies: List[Company] = Field(..., description="증권사별 분석 결과 리스트")
     financial_data: Dict = Field(..., description="요청된 종목의 재무 데이터")
 
+class FinalAnswer_v2(BaseModel):
+    summary: str = Field(..., description="여러 리포트를 종합한 전체 요약")
+    companies: List[Company] = Field(..., description="증권사별 분석 결과 리스트")
+    financial_TimeSeries: Dict[str, float] = Field(..., description="요청된 종목의 재무 데이터")
+
+
 
 def get_report_chain():
     mode = os.getenv("LLM_MODE", "solar")
@@ -27,7 +33,7 @@ def get_report_chain():
     else:
         llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
 
-    parser = PydanticOutputParser(pydantic_object=FinalAnswer)
+    parser = PydanticOutputParser(pydantic_object=FinalAnswer_v2)
 
     # [TEST] output이 원하는 모양으로 나올 때까지 prompt를 수정할 것
     # format instruction 주입
@@ -60,3 +66,4 @@ def get_report_chain():
     chain = prompt | llm | parser
 
     return chain
+

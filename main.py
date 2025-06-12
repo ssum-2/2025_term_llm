@@ -8,8 +8,12 @@ from graph_workflow import run_pdf_workflow
 from vector_db import get_vector_db, search_vector_db
 from chains import get_report_chain
 from financial import get_financial_data
+from financial import get_all_tickers
+from financial import get_financial_TimeSeries_data
 from dotenv import load_dotenv
 
+#
+from chains import get_preinsight_chain
 
 # 환경변수 불러오기
 load_dotenv()
@@ -55,7 +59,8 @@ async def upload_pdf(files: List[UploadFile] = File(...), mode: str = Form("sola
 async def ask_question(query: str = Form(...)):
     # dictionary 나중에 빼둘 것
     print(f"[ask_question] query: {query}")
-    stock_dict = {"삼성전자": "005930", "LG에너지솔루션": "373220", "애플": "AAPL", "HDC": "012630", "SK하이닉스": "000660"}
+    # stock_dict = {"삼성전자": "005930", "LG에너지솔루션": "373220", "애플": "AAPL", "HDC": "012630", "SK하이닉스": "000660"}
+    stock_dict = get_all_tickers()
     matched_stocks = [name for name in stock_dict.keys() if name in query.upper()]
     print(f"[ask_question] matched_stocks: {matched_stocks}")
     ticker = stock_dict.get(matched_stocks[0]) if matched_stocks else "005930"
@@ -76,7 +81,8 @@ async def ask_question(query: str = Form(...)):
         context_parts.append(f"--- 문서 출처: {source}, 페이지: {page} ---\n{content}\n")
 
     context = "\n".join(context_parts)
-    financial = get_financial_data(ticker) if ticker else {}
+    # financial = get_financial_data(ticker) if ticker else {}
+    financial = get_financial_TimeSeries_data(ticker) if ticker else {}
     chain = get_report_chain()
 
     try:
