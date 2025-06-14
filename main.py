@@ -13,7 +13,7 @@ from financial import get_financial_TimeSeries_data
 from dotenv import load_dotenv
 
 #
-from chains import get_preinsight_chain
+# from chains import get_preinsight_chain
 
 # 환경변수 불러오기
 load_dotenv()
