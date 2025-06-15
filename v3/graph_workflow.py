@@ -84,20 +84,20 @@ async def layout_analysis_node(state: AnalysisState) -> dict:
 
 
 async def process_elements_node(state: AnalysisState) -> dict:
-    """레이아웃 분석 결과를 바탕으로 요소 추출, 요약, 주장 추출을 수행하는 노드"""
-    print("--- 3. 요소 처리 및 문서 생성 노드 시작 ---")
+    """
+    레이아웃 분석 결과를 바탕으로 '페이지 단위'로 요소를 그룹화하고,
+    요약 및 주장 추출을 수행하여 API 호출을 최소화하는 노드
+    """
+    print("--- 3. 요소 처리 및 문서 생성 노드 시작 (비용 최적화 버전) ---")
     llm, mini_llm = state['llm'], state['mini_llm']
     openai_client = get_openai_client()
     all_docs = []
 
     for original_path, split_paths in state["split_pdf_paths"].items():
         source_file = os.path.basename(original_path)
-
-        # 해당 원본 PDF에 속한 분석 결과만 필터링
         relevant_analysis = {p: state["analysis_results"][p] for p in split_paths if p in state["analysis_results"]}
         if not relevant_analysis: continue
 
-        # 1. 구조화된 요소 추출
         page_elements = ElementProcessor.extract_and_structure_elements(relevant_analysis)
         author_match = re.search(r'([\w\s]+(?:증권|투자증권|자산운용|경제연구소|리서치))',
                                  list(relevant_analysis.values())[0].get('html', ''))
@@ -105,28 +105,40 @@ async def process_elements_node(state: AnalysisState) -> dict:
 
         print(f"📄 [{source_file}] 저자: '{author}', 페이지: {len(page_elements)}")
 
-        # 2. 이미지/테이블 요소 크롭
         ElementProcessor.crop_and_save_elements(original_path, page_elements)
 
-        # 3. 페이지별 멀티모달 요약 생성
-        page_summaries = {}
+        # --- 수정된 핵심 로직: 페이지 단위 처리 ---
+        page_content_for_extraction = []
         for page_num, elements in page_elements.items():
-            page_text = " ".join([e.get('text', '') for e in elements if 'text' in e])
-            summary_tasks = [
-                asyncio.to_thread(ElementProcessor.summarize_element, e, page_text, mini_llm, openai_client) for e in
-                elements]
-            summaries = await asyncio.gather(*summary_tasks)
-            page_summary = "\n".join(filter(None, summaries))
-            page_summaries[page_num] = page_summary
-            all_docs.append(Document(page_content=page_summary, metadata={"source_file": source_file, "page": page_num,
+            # 1. 한 페이지의 모든 텍스트 요소를 결합
+            page_text = "\n".join([e.get('text', '') for e in elements if e.get('category') in ['title', 'header', 'paragraph', 'list']])
+
+            # 2. (선택적) 이미지/테이블 요약 (기존 로직 유지하되, 비용 문제 시 비활성화 가능)
+            multimodal_summaries = []
+            mm_tasks = [
+                asyncio.to_thread(ElementProcessor.summarize_element, e, page_text, mini_llm, openai_client)
+                for e in elements if e.get('category') in ['figure', 'table']
+            ]
+            if mm_tasks:
+                summaries = await asyncio.gather(*mm_tasks)
+                multimodal_summaries = list(filter(None, summaries))
+
+            # 3. 텍스트와 이미지/테이블 요약을 합쳐 페이지 전체 요약본 생성
+            full_page_content = page_text
+            if multimodal_summaries:
+                full_page_content += "\n\n[이미지/표 요약]\n" + "\n".join(multimodal_summaries)
+
+            page_content_for_extraction.append(full_page_content)
+            all_docs.append(Document(page_content=full_page_content, metadata={"source_file": source_file, "page": page_num,
                                                                           "element_type": "page_summary"}))
 
-        # 4. 주장 추출
-        full_summary = "\n\n".join(page_summaries.values())
-        if full_summary:
+        # --- 주장 추출: 전체 리포트 내용을 한 번에 처리 ---
+        full_report_summary = "\n\n".join(page_content_for_extraction)
+        if full_report_summary:
             extractor_chain = build_extractor_chain(llm)
             try:
-                extracted_data = await extractor_chain.ainvoke({"text": full_summary, "source_entity_name": author})
+                # 리포트 전체 텍스트를 한 번에 넣어 주장 추출 (API 호출 1회)
+                extracted_data = await extractor_chain.ainvoke({"text": full_report_summary, "source_entity_name": author})
                 assertions = extracted_data.assertions
                 print(f"✅ [{source_file}] 주장 추출: {len(assertions)}개")
                 for assertion in assertions:
@@ -141,7 +153,6 @@ async def process_elements_node(state: AnalysisState) -> dict:
 
     await save_to_vector_db(all_docs)
     return {"all_docs": all_docs}
-
 
 async def detect_stocks_node(state: AnalysisState) -> dict:
     from main import ticker_cache
