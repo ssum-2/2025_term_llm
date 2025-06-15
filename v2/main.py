@@ -123,16 +123,30 @@ async def get_news_summary():
 
 @app.get("/financial-chart")
 async def get_financial_chart_data():
-    """[신규] 재무 차트 데이터만 별도로 제공하는 API"""
+    """[수정됨] 탐지된 모든 종목의 재무 차트 데이터를 제공하는 API"""
     if 'latest_state' not in analysis_cache:
         return JSONResponse(content={}, status_code=404)
 
-    financial_data = analysis_cache['latest_state'].get('financial_data', {})
-    main_ticker = list(financial_data.keys())[0] if financial_data else None
-    financial_ts_data = financial_data.get(main_ticker) if main_ticker else None
+    state = analysis_cache['latest_state']
+    financial_data = state.get('financial_data', {})  # { "티커": FinancialTimeSeriesData }
+    detected_stocks = state.get('detected_stocks', {})  # { "종목명": "티커" }
 
-    return JSONResponse(content=financial_ts_data.model_dump() if financial_ts_data else {})
+    if not financial_data or not detected_stocks:
+        return JSONResponse(content=[], status_code=404)
 
+    # 종목명-티커 역방향 맵 생성
+    ticker_to_name = {v: k for k, v in detected_stocks.items()}
+
+    response_data = []
+    for ticker, ts_data in financial_data.items():
+        company_name = ticker_to_name.get(ticker, "N/A")
+        response_data.append({
+            "company_name": company_name,
+            "ticker": ticker,
+            "data": ts_data.model_dump()
+        })
+
+    return JSONResponse(content=response_data)
 
 @app.post("/ask")
 async def ask_question(
