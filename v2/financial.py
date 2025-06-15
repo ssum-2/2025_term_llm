@@ -23,9 +23,9 @@ def get_financial_timeseries_data_for_llm(ticker: str, years: int = 3) -> Financ
         start_date = today - timedelta(days=(years * 365)+30)
         today_str, start_date_str = today.strftime("%Y%m%d"), start_date.strftime("%Y%m%d")
 
-        time.sleep(0.2)
+        # time.sleep(0.2)
         price_df = pykrx_stock.get_market_ohlcv(start_date_str, today_str, ticker, freq='m')['종가']
-        time.sleep(0.2)
+        # time.sleep(0.2)
         fundamental_df = pykrx_stock.get_market_fundamental(start_date_str, today_str, ticker, freq='m')
 
         price_df.index = price_df.index.strftime('%Y-%m')
