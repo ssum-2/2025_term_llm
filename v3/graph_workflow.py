@@ -1,36 +1,35 @@
-import asyncio, os, re, pickle, fitz
+import asyncio, os, re
 from typing import TypedDict, List, Dict, Optional
 from collections import defaultdict
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START, END, MessageGraph
 
 from dependencies import get_openai_client
 from vector_db import save_to_vector_db
-from utils import parse_pdf_advanced, summarize_element_advanced
+from utils import PDFSplitter, LayoutAnalyzer, ElementProcessor
 from chains import (
-    build_extractor_chain,
-    build_entity_summary_chain,
-    build_news_summary_chain,
-    build_grand_summary_chain,
-    ReportSummary, NewsSummary, ExtractedAssertion, EntityAnalysis, GrandSummary
+    build_extractor_chain, build_entity_summary_chain,
+    build_news_summary_chain, build_grand_summary_chain,
+    ReportSummary, NewsSummary, EntityAnalysis, GrandSummary
 )
 from financial import get_financial_timeseries_data_for_llm, FinancialTimeSeriesData
 from news_crawler import get_latest_news
-from aiolimiter import AsyncLimiter
 
 
-
-limiter = AsyncLimiter(max_rate=50, time_period=60)
-
-
-# AnalysisState의 pdf_hashes 필드를 제거 (더 이상 캐싱에 사용하지 않음)
 class AnalysisState(TypedDict):
     pdf_paths: List[str]
     mode: str
     llm: BaseChatModel
     mini_llm: BaseChatModel
+
+    # PDF 파싱을 위한 상세 상태
+    split_pdf_paths: Dict[str, List[str]]
+    analysis_results: Dict[str, Dict]
+    structured_elements: Dict[str, Dict]
+
+    # 최종 결과물
     all_docs: List[Document]
     detected_stocks: Dict[str, str]
     financial_data: Dict[str, FinancialTimeSeriesData]
@@ -40,76 +39,105 @@ class AnalysisState(TypedDict):
     grand_summary: Optional[GrandSummary]
 
 
-async def process_pdfs_node(state: AnalysisState) -> dict:
-    """
-    초강력 PDF 파서를 사용하여 모든 PDF를 처리하고 분석 문서를 생성하는 단일 노드.
-    """
-    llm = state['llm']
-    mini_llm = state['mini_llm']
-    openai_client = get_openai_client()
+async def split_pdf_node(state: AnalysisState) -> dict:
+    """PDF를 작은 조각으로 분할하는 노드"""
+    print("--- 1. PDF 분할 노드 시작 ---")
+    split_pdf_paths = {}
+    for path in state["pdf_paths"]:
+        split_pdf_paths[path] = PDFSplitter.split(path)
+    return {"split_pdf_paths": split_pdf_paths}
+
+
+async def layout_analysis_node(state: AnalysisState) -> dict:
+    """분할된 PDF 조각들의 레이아웃을 분석하는 노드"""
+    print("--- 2. Layout 분석 노드 시작 ---")
     upstage_api_key = os.getenv("UPSTAGE_API_KEY")
+    if not upstage_api_key: raise ValueError("UPSTAGE_API_KEY가 .env에 없습니다.")
 
-    if not upstage_api_key:
-        raise ValueError("UPSTAGE_API_KEY가 .env 파일에 설정되지 않았습니다.")
+    analyzer = LayoutAnalyzer(upstage_api_key)
+    analysis_results = {}
 
+    semaphore = asyncio.Semaphore(5)
+    async def analyze_file(path):
+        # 세마포를 사용하여 동시 실행 수를 제어
+        async with semaphore:
+            print(f"  -> Layout 분석 시작: {os.path.basename(path)}")
+            # analyzer.analyze는 동기 함수이므로 to_thread로 비동기 실행
+            result = await asyncio.to_thread(analyzer.analyze, path)
+            print(f"  <- Layout 분석 완료: {os.path.basename(path)}")
+            return path, result
+
+    tasks = [analyze_file(p) for paths in state["split_pdf_paths"].values() for p in paths]
+    results = await asyncio.gather(*tasks)
+
+    for path, result in results:
+        if result: analysis_results[path] = result
+
+    # 오류가 발생한 결과를 명시적으로 출력
+    failed_analyses = [path for path, res in results if not res]
+    if failed_analyses:
+        print(f"❌ Layout 분석 실패 목록 ({len(failed_analyses)}개):")
+        for f in failed_analyses:
+            print(f"  - {os.path.basename(f)}")
+
+    return {"analysis_results": analysis_results}
+
+
+async def process_elements_node(state: AnalysisState) -> dict:
+    """레이아웃 분석 결과를 바탕으로 요소 추출, 요약, 주장 추출을 수행하는 노드"""
+    print("--- 3. 요소 처리 및 문서 생성 노드 시작 ---")
+    llm, mini_llm = state['llm'], state['mini_llm']
+    openai_client = get_openai_client()
     all_docs = []
 
-    async def process_single_pdf_advanced(pdf_path: str):
-        source_file = os.path.basename(pdf_path)
+    for original_path, split_paths in state["split_pdf_paths"].items():
+        source_file = os.path.basename(original_path)
 
-        # 1. 초강력 PDF 파서 실행
-        parsed_data = await asyncio.to_thread(parse_pdf_advanced, pdf_path, upstage_api_key)
-        elements_by_page = parsed_data.get("elements_by_page", {})
-        author = parsed_data.get("author", "작성자")
+        # 해당 원본 PDF에 속한 분석 결과만 필터링
+        relevant_analysis = {p: state["analysis_results"][p] for p in split_paths if p in state["analysis_results"]}
+        if not relevant_analysis: continue
 
-        # [로깅] 파싱 결과 요약
-        total_elements = sum(len(elems) for elems in elements_by_page.values())
-        print(f"✅ [{source_file}] 파싱 완료. (저자: {author}, 총 {len(elements_by_page)}페이지, {total_elements}개 요소)")
+        # 1. 구조화된 요소 추출
+        page_elements = ElementProcessor.extract_and_structure_elements(relevant_analysis)
+        author_match = re.search(r'([\w\s]+(?:증권|투자증권|자산운용|경제연구소|리서치))',
+                                 list(relevant_analysis.values())[0].get('html', ''))
+        author = author_match.group(1).strip().replace("\n", " ") if author_match else "작성자"
 
-        generated_docs = []
+        print(f"📄 [{source_file}] 저자: '{author}', 페이지: {len(page_elements)}")
+
+        # 2. 이미지/테이블 요소 크롭
+        ElementProcessor.crop_and_save_elements(original_path, page_elements)
+
+        # 3. 페이지별 멀티모달 요약 생성
         page_summaries = {}
-
-        # 2. 페이지별 멀티모달 요약 생성
-        for page_num, elements in elements_by_page.items():
-            page_text = " ".join([elem.get('text', '') for elem in elements if 'text' in elem])
-
-            summary_tasks = [asyncio.to_thread(summarize_element_advanced, elem, page_text, mini_llm, openai_client) for
-                             elem in elements]
+        for page_num, elements in page_elements.items():
+            page_text = " ".join([e.get('text', '') for e in elements if 'text' in e])
+            summary_tasks = [
+                asyncio.to_thread(ElementProcessor.summarize_element, e, page_text, mini_llm, openai_client) for e in
+                elements]
             summaries = await asyncio.gather(*summary_tasks)
             page_summary = "\n".join(filter(None, summaries))
             page_summaries[page_num] = page_summary
+            all_docs.append(Document(page_content=page_summary, metadata={"source_file": source_file, "page": page_num,
+                                                                          "element_type": "page_summary"}))
 
-            generated_docs.append(Document(
-                page_content=page_summary,
-                metadata={"source_file": source_file, "page": page_num, "element_type": "page_summary"}
-            ))
-
-        # 3. 전체 내용을 바탕으로 '주장' 추출
-        full_page_summaries = "\n\n".join(page_summaries.values())
-        if full_page_summaries:
+        # 4. 주장 추출
+        full_summary = "\n\n".join(page_summaries.values())
+        if full_summary:
             extractor_chain = build_extractor_chain(llm)
             try:
-                extracted_data = await extractor_chain.ainvoke(
-                    {"text": full_page_summaries, "source_entity_name": author})
+                extracted_data = await extractor_chain.ainvoke({"text": full_summary, "source_entity_name": author})
                 assertions = extracted_data.assertions
-                print(f"✅ [{source_file}] 주장 추출 완료: {len(assertions)}개")
+                print(f"✅ [{source_file}] 주장 추출: {len(assertions)}개")
                 for assertion in assertions:
-                    page_content = f"주장: {assertion.assertion}\n근거: {assertion.evidence}"
-                    metadata = {
-                        "source_file": source_file, "page": "N/A", "element_type": "assertion_info",
-                        "source_entity": author, "subject": assertion.subject, "sentiment": assertion.sentiment,
-                    }
-                    generated_docs.append(Document(page_content=page_content, metadata=metadata))
+                    all_docs.append(Document(
+                        page_content=f"주장: {assertion.assertion}\n근거: {assertion.evidence}",
+                        metadata={"source_file": source_file, "page": "N/A", "element_type": "assertion_info",
+                                  "source_entity": author, "subject": assertion.subject,
+                                  "sentiment": assertion.sentiment}
+                    ))
             except Exception as e:
                 print(f"❌ [{source_file}] 주장 추출 실패: {e}")
-
-        return generated_docs
-
-    tasks = [process_single_pdf_advanced(path) for path in state['pdf_paths']]
-    results = await asyncio.gather(*tasks)
-
-    for doc_list in results:
-        all_docs.extend(doc_list)
 
     await save_to_vector_db(all_docs)
     return {"all_docs": all_docs}
@@ -164,17 +192,21 @@ async def detect_stocks_node(state: AnalysisState) -> dict:
 async def fetch_external_data_node(state: AnalysisState) -> dict:
     detected_stocks = state.get('detected_stocks', {})
     if not detected_stocks:
-        print("[Node: fetch_external_data] 탐지된 종목이 없어 외부 데이터 수집을 건너뜁니다.")
+        print("️⚠️ [Node: fetch_external_data] 탐지된 종목이 없어 외부 데이터 수집을 건너뜁니다.")
         return {"financial_data": {}, "news_articles": {}}
 
-    financial_tasks = {name: asyncio.to_thread(get_financial_timeseries_data_for_llm, ticker) for name, ticker in detected_stocks.items()}
+    financial_tasks = {name: asyncio.to_thread(get_financial_timeseries_data_for_llm, ticker) for name, ticker in
+                       detected_stocks.items()}
     news_tasks = {name: asyncio.to_thread(get_latest_news, name, max_results=5) for name in detected_stocks.keys()}
 
-    financial_results = await asyncio.gather(*financial_tasks.values())
-    news_results = await asyncio.gather(*news_tasks.values())
+    financial_results, news_results = await asyncio.gather(
+        asyncio.gather(*financial_tasks.values()),
+        asyncio.gather(*news_tasks.values())
+    )
 
-    financial_data = {ticker: data for data, ticker in zip(financial_results, detected_stocks.values()) if data and data.price}
-    news_articles = {name: news for name, news in zip(detected_stocks.keys(), news_results) if news}
+    financial_data = {list(detected_stocks.keys())[i]: data for i, data in enumerate(financial_results) if
+                      data and data.price}
+    news_articles = {list(detected_stocks.keys())[i]: news for i, news in enumerate(news_results) if news}
 
     return {"financial_data": financial_data, "news_articles": news_articles}
 
@@ -203,14 +235,12 @@ async def generate_summaries_node(state: AnalysisState) -> dict:
         entity_analyses = [res for res in results if isinstance(res, EntityAnalysis)]
 
     if entity_analyses:
-        print(f"[Node: generate_summaries] 구조화된 주장 {len(entity_analyses)}개 그룹을 바탕으로 리포트 요약 생성.")
         insight_context = "\n\n".join(f"### {a.entity_name}\n- {a.main_stance}" for a in entity_analyses)
         insight_prompt = PromptTemplate.from_template(
             "다음은 여러 분석 주체들의 핵심 입장입니다. 이를 종합하여 전체 시장과 분석 대상에 대한 최종 인사이트를 3-4 문장으로 요약해주세요.\n\n{context}")
         overall_insight = (await (insight_prompt | mini_llm).ainvoke({"context": insight_context})).content
         report_summary = ReportSummary(overall_insight=overall_insight, entity_analyses=entity_analyses)
     else:
-        print("[Node: generate_summaries] 구조화된 주장을 찾지 못했습니다. 대체 리포트 요약을 생성합니다.")
         text_summaries = [doc.page_content for doc in state['all_docs'] if
                           doc.metadata.get("element_type") == "page_summary"]
         if text_summaries:
@@ -229,9 +259,8 @@ async def generate_summaries_node(state: AnalysisState) -> dict:
     if all_news:
         news_summary_chain = build_news_summary_chain(mini_llm)
         generated_part = await news_summary_chain.ainvoke({"news_articles": all_news})
-        news_summary = NewsSummary(
-            summary=generated_part.summary, key_events=generated_part.key_events, articles=all_news
-        )
+        news_summary = NewsSummary(summary=generated_part.summary, key_events=generated_part.key_events,
+                                   articles=all_news)
 
     return {"report_summary": report_summary, "news_summary": news_summary}
 
@@ -241,10 +270,8 @@ async def generate_grand_summary_node(state: AnalysisState) -> dict:
     news_summary = state.get('news_summary')
 
     if not report_summary or not news_summary:
-        print("[Node: generate_grand_summary] 리포트 또는 뉴스 요약이 없어 최종 분석을 건너뜁니다.")
         return {"grand_summary": None}
 
-    print("[Node: generate_grand_summary] 최종 종합 분석 생성 중...")
     grand_summary_chain = build_grand_summary_chain(state['llm'])
     grand_summary = await grand_summary_chain.ainvoke({
         "report_insight": report_summary.overall_insight,
@@ -254,25 +281,36 @@ async def generate_grand_summary_node(state: AnalysisState) -> dict:
     return {"grand_summary": grand_summary}
 
 
-async def run_analysis_workflow(pdf_paths: List[str], pdf_hashes: List[str], mode: str, semaphore: asyncio.Semaphore,
-                                llm: BaseChatModel, mini_llm: BaseChatModel):
+def build_graph():
+    """LangGraph 워크플로우를 구성하고 컴파일합니다."""
     workflow = StateGraph(AnalysisState)
-    workflow.add_node("process_pdfs", process_pdfs_node)
+
+    workflow.add_node("split_pdfs", split_pdf_node)
+    workflow.add_node("layout_analysis", layout_analysis_node)
+    workflow.add_node("process_elements", process_elements_node)
     workflow.add_node("detect_stocks", detect_stocks_node)
     workflow.add_node("fetch_external_data", fetch_external_data_node)
     workflow.add_node("generate_summaries", generate_summaries_node)
     workflow.add_node("generate_grand_summary", generate_grand_summary_node)
 
-    workflow.add_edge(START, "process_pdfs")
-    workflow.add_edge("process_pdfs", "detect_stocks")
+    workflow.set_entry_point("split_pdfs")
+    workflow.add_edge("split_pdfs", "layout_analysis")
+    workflow.add_edge("layout_analysis", "process_elements")
+    workflow.add_edge("process_elements", "detect_stocks")
     workflow.add_edge("detect_stocks", "fetch_external_data")
     workflow.add_edge("fetch_external_data", "generate_summaries")
     workflow.add_edge("generate_summaries", "generate_grand_summary")
     workflow.add_edge("generate_grand_summary", END)
 
-    app = workflow.compile()
+    return workflow.compile()
+
+
+app = build_graph()
+async def run_analysis_workflow(pdf_paths: List[str], mode: str, llm: BaseChatModel, mini_llm: BaseChatModel):
     initial_state = {
-        "pdf_paths": pdf_paths, "pdf_hashes": pdf_hashes, "mode": mode,
-        "semaphore": semaphore, "llm": llm, "mini_llm": mini_llm
+        "pdf_paths": pdf_paths,
+        "mode": mode,
+        "llm": llm,
+        "mini_llm": mini_llm,
     }
     return await app.ainvoke(initial_state)

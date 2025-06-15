@@ -41,6 +41,7 @@ def get_openai_client():
     """OpenAI 클라이언트 인스턴스를 반환합니다 (이미지 캡셔닝용)."""
     # 이 함수는 utils.py의 멀티모달 요약에 사용됩니다.
     print("[Model Loader] Getting OpenAI client")
-    if os.getenv("LLM_MODE", "solar") == "openai":
+    # 수정 전: if os.getenv("LLM_MODE", "solar") == "openai":
+    if os.getenv("LLM_MODE", "solar") != "solar": # 수정 후
         return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     return None
