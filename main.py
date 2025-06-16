@@ -1,102 +1,185 @@
 import os
-import asyncio
-from typing import List
-from fastapi import FastAPI, UploadFile, File, Form
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import hashlib, traceback, shutil, time
+from typing import List, Dict, Any
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from graph_workflow import run_pdf_workflow
-from vector_db import get_vector_db, search_vector_db
-from chains import get_report_chain
-from financial import get_financial_data
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+from graph_workflow import run_analysis_workflow
+from vector_db import clear_vector_db, load_vector_db_from_disk
+from chains import build_final_answer_chain
 from financial import get_all_tickers
-from financial import get_financial_TimeSeries_data
+from rag import advanced_rag_search
 from dotenv import load_dotenv
+from dependencies import get_llm, get_mini_llm, get_reranker
 
-#
-# from chains import get_preinsight_chain
-
-# 환경변수 불러오기
 load_dotenv()
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
+# check time middleware
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    # 요청 처리 시작 전 시간 기록
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    end_time = time.perf_counter()
+    process_time = end_time - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    print(f"--- [{request.method}] {request.url.path} 처리 시간: {process_time:.2f}초 ---")
+
+    return response
+
 # 병렬처리를 위한 동시 요청 수 조정
 API_CONCURRENCY_LIMIT = 5
+analysis_cache: Dict[str, Any] = {}
+ticker_cache: dict | None = None
+
+
+@app.on_event("startup")
+def startup_event():
+    global ticker_cache
+    for dir_path in ['./tmp', './.cache/parsed_pdfs', './.cache/summarized_docs', './.cache/vector_db', './tmp/images']:
+        os.makedirs(dir_path, exist_ok=True)
+    ticker_cache = get_all_tickers()
+    load_vector_db_from_disk()
+    get_llm();
+    get_mini_llm();
+    get_reranker()
+    print("Server startup complete.")
 
 @app.get("/")
-def read_index():
-    return FileResponse("static/index.html")
+def read_index(): return FileResponse("static/index.html")
 
 # asyncio.gather 사용, 비동기
 @app.post("/upload")
-async def upload_pdf(files: List[UploadFile] = File(...), mode: str = Form("solar")):
-    tasks = []
-    temp_files = []
+async def upload_and_process_pdfs(
+        files: List[UploadFile] = File(...),
+        mode: str = Form("solar"),
+        llm: BaseChatModel = Depends(get_llm),
+        mini_llm: BaseChatModel = Depends(get_mini_llm),
+):
+    split_dir = "./tmp/split_pdfs"
+    if os.path.exists(split_dir):
+        shutil.rmtree(split_dir)
+    os.makedirs(split_dir, exist_ok=True)
 
-    # semaphore (공통)
-    semaphore = asyncio.Semaphore(API_CONCURRENCY_LIMIT)
-    os.makedirs('./tmp', exist_ok=True)
-    for file in files:
-        file_path = f"./tmp/tmp_{file.filename}"
-        temp_files.append(file_path)
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
-        # 각 파일에 대한 워크플로우 실행을 task로 추가
-        tasks.append(run_pdf_workflow(file_path, mode, semaphore))
+    if os.path.exists("./.cache/summarized_docs"):
+        shutil.rmtree("./.cache/summarized_docs")
+    os.makedirs("./.cache/summarized_docs", exist_ok=True)
+    clear_vector_db()  # Vector DB 캐시도 함께 초기화
 
-    await asyncio.gather(*tasks)
+    analysis_cache.clear()
 
-    # 임시 파일 삭제
-    for file_path in temp_files:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    temp_file_paths, pdf_hashes = [], []
+    try:
+        for file in files:
+            content = await file.read()
+            pdf_hashes.append(hashlib.sha256(content).hexdigest())
+            path = f"./tmp/{file.filename}"
+            temp_file_paths.append(path)
+            with open(path, "wb") as f: f.write(content)
 
-    return {"status": "success", "file_count": len(files)}
+        final_state = await run_analysis_workflow(
+            pdf_paths=temp_file_paths, mode=mode, llm=llm, mini_llm=mini_llm
+        )
+        analysis_cache['latest_state'] = final_state
+        detected_stocks = final_state.get('detected_stocks', {})
+        return {"status": "success", "file_count": len(files),
+                "detected_stock": ", ".join(detected_stocks.keys()) or "탐지된 종목 없음"}
+    except Exception as e:
+        tb_str = traceback.format_exc()
+        print("--- DETAILED ERROR TRACEBACK ---")
+        print(tb_str)
+        print("---------------------------------")
+        raise HTTPException(status_code=500, detail=f"파일 처리 중 오류 발생: {e}")
+    finally:
+        for file_path in temp_file_paths:
+            if os.path.exists(file_path): os.remove(file_path)
+
+
+
+@app.get("/grand-summary")
+async def get_grand_summary():
+    if 'latest_state' not in analysis_cache:
+        return JSONResponse(content={}, status_code=404)
+    grand_summary = analysis_cache['latest_state'].get('grand_summary')
+    return JSONResponse(content=grand_summary.model_dump() if grand_summary else {})
+
+
+@app.get("/report-summary")
+async def get_report_summary():
+    if 'latest_state' not in analysis_cache:
+        return JSONResponse(content={}, status_code=404)
+    report_summary = analysis_cache['latest_state'].get('report_summary')
+    return JSONResponse(content=report_summary.model_dump() if report_summary else {})
+
+
+@app.get("/news-summary")
+async def get_news_summary():
+    if 'latest_state' not in analysis_cache:
+        return JSONResponse(content={}, status_code=404)
+    news_summary = analysis_cache['latest_state'].get('news_summary')
+    return JSONResponse(content=news_summary.model_dump() if news_summary else {})
+
+
+@app.get("/financial-chart")
+async def get_financial_chart_data():
+    if 'latest_state' not in analysis_cache:
+        return JSONResponse(content=[], status_code=404)
+
+    state = analysis_cache['latest_state']
+    financial_data_map = state.get('financial_data', {})
+    detected_stocks = state.get('detected_stocks', {})
+
+    if not detected_stocks:
+        return JSONResponse(content=[])
+    response_data = []
+    # detected_stocks를 기준으로 순회하여 회사명과 티커 조회
+    for company_name, ticker in detected_stocks.items():
+        # 해당 회사명의 재무 데이터가 있는지 확인
+        if company_name in financial_data_map:
+            ts_data = financial_data_map[company_name]
+            response_data.append({
+                "company_name": company_name,
+                "ticker": ticker,
+                "data": ts_data.model_dump()
+            })
+
+    return JSONResponse(content=response_data)
 
 
 @app.post("/ask")
-async def ask_question(query: str = Form(...)):
-    # dictionary 나중에 빼둘 것
-    print(f"[ask_question] query: {query}")
-    # stock_dict = {"삼성전자": "005930", "LG에너지솔루션": "373220", "애플": "AAPL", "HDC": "012630", "SK하이닉스": "000660"}
-    stock_dict = get_all_tickers()
-    matched_stocks = [name for name in stock_dict.keys() if name in query.upper()]
-    print(f"[ask_question] matched_stocks: {matched_stocks}")
-    ticker = stock_dict.get(matched_stocks[0]) if matched_stocks else "005930"
+async def ask_question(
+        query: str = Form(...),
+        llm: BaseChatModel = Depends(get_llm),
+        mini_llm: BaseChatModel = Depends(get_mini_llm),
+        reranker: HuggingFaceCrossEncoder = Depends(get_reranker)
+):
+    if 'latest_state' not in analysis_cache:
+        raise HTTPException(status_code=400, detail="먼저 PDF 파일을 업로드하고 분석을 완료해주세요.")
 
-    print(f"[ask_question] 현재 Vector DB 상태: {get_vector_db()}")
-
-    docs = search_vector_db(query, k=20)  # k는 10~20 정도로 조정; 10 이하는 특정 문서에만 몰리는 현상이 있음
-    if not docs:
-        return JSONResponse(status_code=404, content={"error": "관련된 내용을 찾을 수 없습니다."})
-
-    print(f"[ask_question] 검색된 문서 수: {len(docs)}")
-
-    context_parts = []
-    for doc in docs:
-        source = doc.metadata.get('source_file', '알 수 없음')
-        page = doc.metadata.get('page', '알 수 없음')
-        content = doc.page_content
-        context_parts.append(f"--- 문서 출처: {source}, 페이지: {page} ---\n{content}\n")
-
-    context = "\n".join(context_parts)
-    # financial = get_financial_data(ticker) if ticker else {}
-    financial = get_financial_TimeSeries_data(ticker) if ticker else {}
-    chain = get_report_chain()
-
+    state = analysis_cache['latest_state']
     try:
-        result = await chain.ainvoke({
-            "context": context,
-            "question": query,
-            "financial": financial
+        rag_docs = await advanced_rag_search(query, k=15, llm=mini_llm, reranker=reranker)
+        context = "\n---\n".join(
+            [f"(출처: {d.metadata.get('source_file', 'N/A')}, 페이지: {d.metadata.get('page', 'N/A')})\n{d.page_content}" for
+             d in rag_docs])
+
+        financial_data = state.get('financial_data', {})
+        news_summary_model = state.get('news_summary')
+        news_summary_text = news_summary_model.summary if news_summary_model else "최신 뉴스 요약 정보가 없습니다."
+
+        final_answer_chain = build_final_answer_chain(llm)
+        analysis_result = await final_answer_chain.ainvoke({
+            "question": query, "context": context,
+            "financial": {k: v.model_dump() for k, v in financial_data.items()},
+            "news_summary": news_summary_text,
         })
-        print(f"[ask_question] result: {result}")
-        return result
+        return JSONResponse(content=analysis_result.model_dump())
     except Exception as e:
-        print(f"[ask_question] result: {result}")
-        print(f"[ask_question] ERROR: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": "LLM 응답 생성 또는 파싱에 실패했습니다.", "details": str(e)}
-        )
+        raise HTTPException(status_code=500, detail=f"답변 생성 중 오류 발생: {e}")
