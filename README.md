@@ -65,3 +65,64 @@
 3. 앱 실행 후 실제 구동 화면 (리포트 업로드 → 질의 → 응답 회신)
 - http://127.0.0.1:8000/
 ![img](https://i.imgur.com/c66AXdq.png)
+
+
+4. 서비스 워크플로우
+```mermaid
+   flowchart TD
+    subgraph subGraph0["Client (사용자 브라우저)"]
+           UI["웹 UI (index.html)"]
+     end
+    subgraph Startup["Startup"]
+           S1["모델 및 DB 로드"]
+     end
+    subgraph subGraph2["Ingestion Pipeline (LangGraph)"]
+       direction LR
+           W6["분석 및 요약 생성"]
+           W5["외부 데이터 수집<br>(뉴스, 재무)"]
+           W4["종목 탐지"]
+           W3["요소 처리 및<br>주장 추출"]
+           W2["레이아웃 분석"]
+           W1["PDF 분할"]
+     end
+    subgraph subGraph3["Q&A Pipeline (RAG)"]
+       direction LR
+           R4["최종 답변 생성"]
+           R3["Re-ranking<br>(정밀 재정렬)"]
+           R2["벡터 검색"]
+           R1["HyDE 질문 확장"]
+     end
+    subgraph subGraph4["Data & State"]
+           Cache["분석 결과 캐시<br>(In-Memory)"]
+           VDB["벡터 DB<br>(FAISS on Disk)"]
+     end
+    subgraph subGraph5["Server (FastAPI)"]
+           Startup
+           subGraph2
+           subGraph3
+           subGraph4
+           B["API: /upload"]
+           C["API: /grand-summary 등"]
+           E["API: /ask"]
+     end
+       W1 --> W2
+       W2 --> W3
+       W3 --> W4
+       W4 --> W5
+       W5 --> W6
+       R1 --> R2
+       R2 --> R3
+       R3 --> R4
+       S1 -- 서버 시작 시 --> B & E
+       UI -- PDF 업로드 --> B
+       B -- 워크플로우 실행 --> W1
+       W6 -- 분석 결과 저장 --> Cache
+       W3 -- 문서 임베딩 --> VDB
+       UI -- 결과 조회 --> C
+       C -- 캐시에서 읽기 --> Cache
+       UI -- 자연어 질문 --> E
+       E -- RAG 검색 실행 --> R1
+       R2 -- 검색 --> VDB
+       R4 -- 캐시 데이터 참조 --> Cache
+       E -- 최종 JSON 응답 --> UI
+```
