@@ -1,6 +1,7 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import asyncio, hashlib, traceback, shutil # <-- shutil 임포트 추가
+import logging
 from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +17,11 @@ from news_crawler import get_latest_news
 from rag import advanced_rag_search
 from dotenv import load_dotenv
 from dependencies import get_llm, get_mini_llm, get_reranker
+logging.getLogger("httpx").setLevel(logging.WARNING)
+import warnings
+warnings.filterwarnings("ignore")
+
+
 
 load_dotenv()
 app = FastAPI()
@@ -152,7 +158,7 @@ async def ask_question(
 
     state = analysis_cache['latest_state']
     try:
-        rag_docs = await advanced_rag_search(query, k=15, llm=mini_llm, reranker=reranker)
+        rag_docs = await advanced_rag_search(query, k=10, llm=mini_llm, reranker=reranker)
         context = "\n---\n".join(
             [f"(출처: {d.metadata.get('source_file', 'N/A')}, 페이지: {d.metadata.get('page', 'N/A')})\n{d.page_content}" for
              d in rag_docs])

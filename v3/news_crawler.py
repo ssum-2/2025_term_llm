@@ -1,5 +1,6 @@
 import os
 from gnews import GNews
+from newspaper import Article
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from typing import List, Dict, Any
@@ -15,12 +16,17 @@ def get_latest_news(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         seen_titles = set()
         for item in news[:max_results]:
             title = item.get('title')
+            url=item.get('url')
             if title and title not in seen_titles:
+                article = Article(url, language='ko')
+                article.download()
+                article.parse()
                 unique_news.append({
                     "title": title,
-                    "url": item.get('url'),
+                    "url": url,
                     "published_date": item.get('published date'),
-                    "publisher": item.get('publisher', {}).get('title')
+                    "publisher": item.get('publisher', {}).get('title'),
+                    "body": article.text
                 })
                 seen_titles.add(title)
         print(f"[News] {len(unique_news)}개의 고유한 뉴스 기사 발견.")

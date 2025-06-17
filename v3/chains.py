@@ -110,11 +110,21 @@ def build_news_summary_chain(llm: BaseChatModel):
 
     parser = PydanticOutputParser(pydantic_object=NewsSummaryForGeneration)
     prompt = PromptTemplate(
-        template="""당신은 시장 동향 분석가입니다. 주어진 최신 뉴스 기사 목록을 바탕으로 시장의 주요 동향과 이벤트를 요약해야 합니다.\n
-        **[입력 데이터]**\n`[뉴스 목록]`에는 여러 뉴스 기사의 제목과 내용 일부가 제공됩니다.\n
-        **[지시 사항]**\n1. 모든 뉴스 기사를 종합하여 현재 시장의 분위기나 주요 이슈를 `summary` 필드에 3-5문장으로 요약해주세요.\n2. 주가에 영향을 미칠 수 있는 긍정적/부정적 핵심 이벤트나 주제를 `key_events` 리스트에 5개 이내로 정리해주세요.\n
-        **[출력 형식]**\n{format_instructions}\n\n**[뉴스 목록]**\n{news_articles}""",
-        input_variables=["news_articles"],
+        template="""당신은 시장 동향 분석가입니다. 주어진 최신 뉴스 기사 본문들을 바탕으로 시장의 주요 동향과 이벤트를 요약해야 합니다.
+
+    **[입력 데이터]**
+    `[뉴스 목록]`에는 여러 뉴스 기사의 제목과 **본문**이 제공됩니다.
+
+    **[지시 사항]**
+    1. 모든 뉴스 기사를 종합하여 현재 시장의 분위기나 주요 이슈를 `summary` 필드에 3-5문장으로 요약해주세요.
+    2. 주가에 영향을 미칠 수 있는 긍정적/부정적 핵심 이벤트나 주제를 `key_events` 리스트에 5개 이내로 정리해주세요.
+
+    **[출력 형식]**
+    {format_instructions}
+
+    **[뉴스 목록]**
+    {news_articles_with_body}""",  # <-- news_articles에서 news_articles_with_body로 변수명 변경 (가독성)
+        input_variables=["news_articles_with_body"],  # <-- 입력 변수명도 동일하게 변경
         partial_variables={"format_instructions": parser.get_format_instructions()},
     )
     return prompt | llm | parser

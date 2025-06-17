@@ -29,7 +29,7 @@ async def advanced_rag_search(query: str, k: int, llm: BaseChatModel, reranker: 
     """HyDE와 Re-ranking을 결합한 고급 RAG 검색을 수행합니다."""
     print("[RAG] 고급 RAG 검색 시작...")
 
-    initial_docs = await get_hyde_documents(query, llm, k=25)
+    initial_docs = await get_hyde_documents(query, llm, k=k)
     if not initial_docs:
         return []
 

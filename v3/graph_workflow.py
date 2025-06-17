@@ -269,7 +269,13 @@ async def generate_summaries_node(state: AnalysisState) -> dict:
     all_news = [article for articles_list in state.get('news_articles', {}).values() for article in articles_list]
     if all_news:
         news_summary_chain = build_news_summary_chain(mini_llm)
-        generated_part = await news_summary_chain.ainvoke({"news_articles": all_news})
+
+        # LLM에 전달할 컨텍스트를 제목과 본문을 포함하여 구성
+        news_context = "\n\n".join(
+            [f"### 기사 제목: {article['title']}\n{article.get('body', '본문 없음')}" for article in all_news]
+        )
+
+        generated_part = await news_summary_chain.ainvoke({"news_articles_with_body": news_context})
         news_summary = NewsSummary(summary=generated_part.summary, key_events=generated_part.key_events,
                                    articles=all_news)
 
